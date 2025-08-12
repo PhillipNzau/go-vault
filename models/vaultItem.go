@@ -1,12 +1,14 @@
 package models
 
 import (
-    "time"
-    "go.mongodb.org/mongo-driver/bson/primitive"
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type VaultItem struct {
     ID          primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	UserID            primitive.ObjectID `bson:"user_id" json:"user_id"`
     Name        string             `json:"name"`
     URL         string             `json:"url"`
     Username    string             `json:"username"`

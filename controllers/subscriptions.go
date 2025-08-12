@@ -13,10 +13,12 @@ import (
 	"github.com/phillip/vault/models"
 )
 
+// CreateSubscription - Only the authenticated user can create their own subscription
 func CreateSubscription(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
 		userID, _ := primitive.ObjectIDFromHex(uid)
+
 		var input struct {
 			ServiceName string  `json:"service_name" binding:"required"`
 			PlanName    string  `json:"plan_name"`
@@ -34,32 +36,57 @@ func CreateSubscription(cfg *config.Config) gin.HandlerFunc {
 		var sd, rd *time.Time
 		if input.StartDate != "" { if t, err := time.Parse(time.RFC3339, input.StartDate); err == nil { sd = &t } }
 		if input.RenewalDate != "" { if t, err := time.Parse(time.RFC3339, input.RenewalDate); err == nil { rd = &t } }
-		sub := models.Subscription{ID: primitive.NewObjectID(), UserID: userID, ServiceName: input.ServiceName, PlanName: input.PlanName, StartDate: sd, RenewalDate: rd, Price: input.Price, Currency: input.Currency, Status: input.Status, Notes: input.Notes, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		sub := models.Subscription{
+			ID: primitive.NewObjectID(),
+			UserID: userID, // owner set here
+			ServiceName: input.ServiceName,
+			PlanName: input.PlanName,
+			StartDate: sd,
+			RenewalDate: rd,
+			Price: input.Price,
+			Currency: input.Currency,
+			Status: input.Status,
+			Notes: input.Notes,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("subscriptions")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if _, err := col.InsertOne(ctx, sub); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save"}); return }
+		if _, err := col.InsertOne(ctx, sub); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save"})
+			return
+		}
 		c.JSON(http.StatusCreated, gin.H{"id": sub.ID.Hex(), "message": "created"})
 	}
 }
 
+// ListSubscriptions - Only the authenticated user can list their own subscriptions
 func ListSubscriptions(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
 		userID, _ := primitive.ObjectIDFromHex(uid)
+
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("subscriptions")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		filter := bson.M{"user_id": userID}
+		filter := bson.M{"user_id": userID} // restrict to only user's subs
 		if status := c.Query("status"); status != "" { filter["status"] = status }
 		cursor, err := col.Find(ctx, filter)
-		if err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error": "fetch failed"}); return }
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "fetch failed"})
+			return
+		}
 		var subs []models.Subscription
-		if err := cursor.All(ctx, &subs); err != nil { c.JSON(http.StatusInternalServerError, gin.H{"error": "decode failed"}); return }
+		if err := cursor.All(ctx, &subs); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "decode failed"})
+			return
+		}
 		c.JSON(http.StatusOK, subs)
 	}
 }
 
+// GetSubscription - Only the owner can fetch their subscription
 func GetSubscription(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
@@ -70,11 +97,16 @@ func GetSubscription(cfg *config.Config) gin.HandlerFunc {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var sub models.Subscription
-		if err := col.FindOne(ctx, bson.M{"_id": oid, "user_id": userID}).Decode(&sub); err != nil { c.JSON(http.StatusNotFound, gin.H{"error": "not found"}); return }
+		// Only fetch if user_id matches
+		if err := col.FindOne(ctx, bson.M{"_id": oid, "user_id": userID}).Decode(&sub); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
 		c.JSON(http.StatusOK, sub)
 	}
 }
 
+// UpdateSubscription - Only the owner can update their subscription
 func UpdateSubscription(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
@@ -91,7 +123,10 @@ func UpdateSubscription(cfg *config.Config) gin.HandlerFunc {
 			Status      string  `json:"status"`
 			Notes       string  `json:"notes"`
 		}
-		if err := c.ShouldBindJSON(&input); err != nil { c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()}); return }
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		update := bson.M{"updated_at": time.Now()}
 		if input.ServiceName != "" { update["service_name"] = input.ServiceName }
 		if input.PlanName != "" { update["plan_name"] = input.PlanName }
@@ -104,12 +139,17 @@ func UpdateSubscription(cfg *config.Config) gin.HandlerFunc {
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("subscriptions")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		// Only update if user_id matches
 		res, err := col.UpdateOne(ctx, bson.M{"_id": oid, "user_id": userID}, bson.M{"$set": update})
-		if err != nil || res.MatchedCount == 0 { c.JSON(http.StatusNotFound, gin.H{"error": "not found or not owned"}); return }
+		if err != nil || res.MatchedCount == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found or not owned"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"message": "updated"})
 	}
 }
 
+// DeleteSubscription - Only the owner can delete their subscription
 func DeleteSubscription(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
@@ -119,8 +159,12 @@ func DeleteSubscription(cfg *config.Config) gin.HandlerFunc {
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("subscriptions")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		// Only delete if user_id matches
 		res, err := col.DeleteOne(ctx, bson.M{"_id": oid, "user_id": userID})
-		if err != nil || res.DeletedCount == 0 { c.JSON(http.StatusNotFound, gin.H{"error": "not found or not owned"}); return }
+		if err != nil || res.DeletedCount == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found or not owned"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 	}
 }
