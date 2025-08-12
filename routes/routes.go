@@ -12,8 +12,19 @@ func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 	r.POST("/auth/register", controllers.Register(cfg))
 	r.POST("/auth/login", controllers.Login(cfg))
 
+
 	// protected
 	auth := middleware.AuthMiddleware(cfg)
+	cat := r.Group("/categories")
+	cat.GET("", controllers.ListCategories(cfg))
+	cat.GET(":id", controllers.GetCategory(cfg))
+	cat.Use(auth)
+	{
+		cat.POST("", controllers.CreateCategory(cfg))
+		cat.PUT("/update/:id", controllers.UpdateCategory(cfg))
+		cat.DELETE("/delete/:id", controllers.DeleteCategory(cfg))
+	}
+
 	creds := r.Group("/credentials")
 	creds.Use(auth)
 	{
