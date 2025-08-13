@@ -32,14 +32,14 @@ func main() {
 
 	// CORS configuration
 	r.Use(cors.New(cors.Config{
-		 AllowOrigins: []string{
-        "https://sub-safe-two.vercel.app", 
-        "http://localhost:4200"},
+		AllowOrigins: []string{
+        "https://sub-safe-two.vercel.app",
+        "http://localhost:4200",},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Content-Type", "Authorization"},
-		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
-		MaxAge:           12 * time.Hour,
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+    	ExposeHeaders:    []string{"Content-Length"},
+    	AllowCredentials: true,
+    	MaxAge:           12 * time.Hour,
 	}))
 
 	routes.SetupRoutes(r, cfg)
