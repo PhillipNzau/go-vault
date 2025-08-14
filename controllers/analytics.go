@@ -25,8 +25,20 @@ func MonthlySummary(cfg *config.Config) gin.HandlerFunc {
 		defer cancel()
 
 		// Restrict aggregation to only user's subscriptions
-		matchStage := bson.D{{"$match", bson.D{{"user_id", userID}, {"status", "active"}}}}
-		groupStage := bson.D{{"$group", bson.D{{"_id", "$currency"}, {"total", bson.D{{"$sum", "$price"}}}}}}
+		matchStage := bson.D{
+			{Key: "$match", Value: bson.D{
+				{Key: "user_id", Value: userID},
+				{Key: "status", Value: "active"},
+			}},
+		}
+		
+		groupStage := bson.D{
+			{Key: "$group", Value: bson.D{
+				{Key: "_id", Value: "$currency"},
+				{Key: "total", Value: bson.D{{Key: "$sum", Value: "$price"}}},
+			}},
+		}
+		
 		pipeline := mongo.Pipeline{matchStage, groupStage}
 
 		cursor, err := col.Aggregate(ctx, pipeline)
