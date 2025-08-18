@@ -11,6 +11,7 @@ func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 	// public
 	r.POST("/auth/register", controllers.Register(cfg))
 	r.POST("/auth/login", controllers.Login(cfg))
+	// r.POST("/verify-otp", controllers.VerifyOTP(cfg))
 
 
 	// protected
@@ -45,6 +46,25 @@ func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 		subs.DELETE(":id", controllers.DeleteSubscription(cfg))
 	}
 
+	export := r.Group("/export")
+	export.Use(auth)
+
+	{
+		// Export
+	export.GET("/credentials/csv", controllers.ExportCredentialsCSV)
+	export.GET("/subscriptions/excel", controllers.ExportSubscriptionsExcel)
+	}
+
+	imports := r.Group("/import")
+	imports.Use(auth)
+
+	{
+		// Import
+	imports.POST("/credentials/csv", controllers.ImportCredentialsCSV)
+	imports.POST("/subscriptions/excel", controllers.ImportSubscriptionsExcel)
+	}
+
 	// analytics
 	r.GET("/analytics/subscriptions", auth, controllers.MonthlySummary(cfg))
+
 }
