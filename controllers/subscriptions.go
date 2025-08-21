@@ -2,6 +2,9 @@ package controllers
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 
 	"github.com/phillip/vault/config"
 	"github.com/phillip/vault/models"
+	"github.com/phillip/vault/utils"
 )
 
 // CreateSubscription - Only the authenticated user can create their own subscription
@@ -33,30 +37,43 @@ func CreateSubscription(cfg *config.Config) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+
 		var sd, rd *time.Time
-		if input.StartDate != "" { if t, err := time.Parse(time.RFC3339, input.StartDate); err == nil { sd = &t } }
-		if input.RenewalDate != "" { if t, err := time.Parse(time.RFC3339, input.RenewalDate); err == nil { rd = &t } }
-		sub := models.Subscription{
-			ID: primitive.NewObjectID(),
-			UserID: userID, // owner set here
-			ServiceName: input.ServiceName,
-			PlanName: input.PlanName,
-			StartDate: sd,
-			RenewalDate: rd,
-			Price: input.Price,
-			Currency: input.Currency,
-			Status: input.Status,
-			Notes: input.Notes,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+		if input.StartDate != "" {
+			if t, err := time.Parse(time.RFC3339, input.StartDate); err == nil {
+				sd = &t
+			}
 		}
+		if input.RenewalDate != "" {
+			if t, err := time.Parse(time.RFC3339, input.RenewalDate); err == nil {
+				rd = &t
+			}
+		}
+
+		sub := models.Subscription{
+			ID:          primitive.NewObjectID(),
+			UserID:      userID,
+			ServiceName: input.ServiceName,
+			PlanName:    input.PlanName,
+			StartDate:   sd,
+			RenewalDate: rd,
+			Price:       input.Price,
+			Currency:    input.Currency,
+			Status:      input.Status,
+			Notes:       input.Notes,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("subscriptions")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+
 		if _, err := col.InsertOne(ctx, sub); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save"})
 			return
 		}
+
 		c.JSON(http.StatusCreated, gin.H{"id": sub.ID.Hex(), "message": "created"})
 	}
 }
@@ -70,18 +87,48 @@ func ListSubscriptions(cfg *config.Config) gin.HandlerFunc {
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("subscriptions")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		filter := bson.M{"user_id": userID} // restrict to only user's subs
-		if status := c.Query("status"); status != "" { filter["status"] = status }
+
+		filter := bson.M{"user_id": userID}
+		if status := c.Query("status"); status != "" {
+			filter["status"] = status
+		}
+
 		cursor, err := col.Find(ctx, filter)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "fetch failed"})
 			return
 		}
+
 		var subs []models.Subscription
 		if err := cursor.All(ctx, &subs); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "decode failed"})
 			return
 		}
+
+		// --- Build ETag for collection ---
+		combined := ""
+		var lastModified time.Time
+		for _, s := range subs {
+			combined += fmt.Sprintf("%s-%d", s.ID.Hex(), s.UpdatedAt.UnixNano())
+			if s.UpdatedAt.After(lastModified) {
+				lastModified = s.UpdatedAt
+			}
+		}
+		hash := md5.Sum([]byte(combined))
+		collectionETag := `"` + hex.EncodeToString(hash[:]) + `"`
+
+		// Handle If-None-Match
+		if match := c.GetHeader("If-None-Match"); match != "" && match == collectionETag {
+			c.Status(http.StatusNotModified)
+			return
+		}
+		c.Header("ETag", collectionETag)
+
+		// --- Add Last-Modified (latest subscription) ---
+		if !lastModified.IsZero() {
+			c.Header("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
+		}
+
 		c.JSON(http.StatusOK, subs)
 	}
 }
@@ -91,20 +138,34 @@ func GetSubscription(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
 		userID, _ := primitive.ObjectIDFromHex(uid)
-		id := c.Param("id")
-		oid, _ := primitive.ObjectIDFromHex(id)
+		oid, _ := primitive.ObjectIDFromHex(c.Param("id"))
+
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("subscriptions")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+
 		var sub models.Subscription
-		// Only fetch if user_id matches
 		if err := col.FindOne(ctx, bson.M{"_id": oid, "user_id": userID}).Decode(&sub); err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
+
+		// --- Generate ETag ---
+		etag := utils.GenerateETag(sub.ID, sub.UpdatedAt)
+		if match := c.GetHeader("If-None-Match"); match != "" && match == etag {
+			c.Status(http.StatusNotModified)
+			return
+		}
+		c.Header("ETag", etag)
+
+		// --- Add Last-Modified ---
+		c.Header("Last-Modified", sub.UpdatedAt.UTC().Format(http.TimeFormat))
+
 		c.JSON(http.StatusOK, sub)
 	}
 }
+
+
 
 // UpdateSubscription - Only the owner can update their subscription
 func UpdateSubscription(cfg *config.Config) gin.HandlerFunc {
