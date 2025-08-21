@@ -2,6 +2,9 @@ package controllers
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -19,7 +22,6 @@ func CreateCredential(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
 		userID, _ := primitive.ObjectIDFromHex(uid)
-		
 
 		var input struct {
 			SiteName string `json:"site_name" binding:"required"`
@@ -35,7 +37,6 @@ func CreateCredential(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		// Encrypt password
 		enc, err := utils.Encrypt(cfg.AESKey, input.Password)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "encryption failed"})
@@ -70,90 +71,124 @@ func CreateCredential(cfg *config.Config) gin.HandlerFunc {
 
 // ListCredentials - Show all credentials for logged-in user
 func ListCredentials(cfg *config.Config) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        uid := c.GetString("user_id")
-        userID, _ := primitive.ObjectIDFromHex(uid)
+	return func(c *gin.Context) {
+		uid := c.GetString("user_id")
+		userID, _ := primitive.ObjectIDFromHex(uid)
 
-        col := cfg.MongoClient.Database(cfg.DBName).Collection("credentials")
-        ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-        defer cancel()
+		col := cfg.MongoClient.Database(cfg.DBName).Collection("credentials")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-        filter := bson.M{"user_id": userID}
+		filter := bson.M{"user_id": userID}
+		if q := c.Query("q"); q != "" {
+			filter["$or"] = bson.A{
+				bson.M{"site_name": bson.M{"$regex": q, "$options": "i"}},
+				bson.M{"username": bson.M{"$regex": q, "$options": "i"}},
+			}
+		}
 
-        // Optional search
-        if q := c.Query("q"); q != "" {
-            filter["$or"] = bson.A{
-                bson.M{"site_name": bson.M{"$regex": q, "$options": "i"}},
-                bson.M{"username": bson.M{"$regex": q, "$options": "i"}},
-            }
-        }
+		cursor, err := col.Find(ctx, filter)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch credentials"})
+			return
+		}
 
-        cursor, err := col.Find(ctx, filter)
-        if err != nil {
-            c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch credentials"})
-            return
-        }
+		var creds []models.Credential
+		if err := cursor.All(ctx, &creds); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not decode creds"})
+			return
+		}
 
-        var creds []models.Credential
-        if err := cursor.All(ctx, &creds); err != nil {
-            c.JSON(http.StatusInternalServerError, gin.H{"error": "could not decode creds"})
-            return
-        }
+		// --- Build ETag for collection ---
+		combined := ""
+		var lastModified time.Time
+		for _, cr := range creds {
+			combined += fmt.Sprintf("%s-%d", cr.ID.Hex(), cr.UpdatedAt.UnixNano())
+			if cr.UpdatedAt.After(lastModified) {
+				lastModified = cr.UpdatedAt
+			}
+		}
+		hash := md5.Sum([]byte(combined))
+		collectionETag := `"` + hex.EncodeToString(hash[:]) + `"`
 
-        // Decrypt passwords for output
-        out := make([]gin.H, 0, len(creds))
-        for _, cr := range creds {
-            pass, _ := utils.Decrypt(cfg.AESKey, cr.PasswordEncrypted)
-            out = append(out, gin.H{
-                "id":         cr.ID.Hex(),
-                "site_name":  cr.SiteName,
-                "username":   cr.Username,
-                "password":   pass,
-                "login_url":  cr.LoginURL,
-                "notes":      cr.Notes,
-                "category":   cr.Category,
-                "created_at": cr.CreatedAt,
-                "updated_at": cr.UpdatedAt,
-            })
-        }
+		// Handle If-None-Match
+		if match := c.GetHeader("If-None-Match"); match != "" && match == collectionETag {
+			c.Status(http.StatusNotModified)
+			return
+		}
+		c.Header("ETag", collectionETag)
 
-        c.JSON(http.StatusOK, out)
-    }
+		// --- Add Last-Modified (latest credential) ---
+		if !lastModified.IsZero() {
+			c.Header("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
+		}
+
+		// Decrypt passwords for output
+		out := make([]gin.H, 0, len(creds))
+		for _, cr := range creds {
+			pass, _ := utils.Decrypt(cfg.AESKey, cr.PasswordEncrypted)
+			out = append(out, gin.H{
+				"id":         cr.ID.Hex(),
+				"site_name":  cr.SiteName,
+				"username":   cr.Username,
+				"password":   pass,
+				"login_url":  cr.LoginURL,
+				"notes":      cr.Notes,
+				"category":   cr.Category,
+				"created_at": cr.CreatedAt,
+				"updated_at": cr.UpdatedAt,
+			})
+		}
+
+		c.JSON(http.StatusOK, out)
+	}
 }
-
 
 // GetCredential - Fetch single credential
 func GetCredential(cfg *config.Config) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        uid := c.GetString("user_id")
-        userID, _ := primitive.ObjectIDFromHex(uid)
+	return func(c *gin.Context) {
+		uid := c.GetString("user_id")
+		userID, _ := primitive.ObjectIDFromHex(uid)
 
-        credID, err := primitive.ObjectIDFromHex(c.Param("id"))
-        if err != nil {
-            c.JSON(http.StatusBadRequest, gin.H{"error": "invalid credential id"})
-            return
-        }
+		credID, err := primitive.ObjectIDFromHex(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid credential id"})
+			return
+		}
 
-        var credential models.Credential
-        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-        defer cancel()
+		var credential models.Credential
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-        err = cfg.MongoClient.Database(cfg.DBName).
-            Collection("credentials").
-            FindOne(ctx, bson.M{"_id": credID, "user_id": userID}).
-            Decode(&credential)
+		err = cfg.MongoClient.Database(cfg.DBName).
+			Collection("credentials").
+			FindOne(ctx, bson.M{"_id": credID, "user_id": userID}).
+			Decode(&credential)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "credential not found or not owned"})
+			return
+		}
 
-        if err != nil {
-            c.JSON(http.StatusNotFound, gin.H{"error": "credential not found or not owned"})
-            return
-        }
+		// --- Generate ETag via utils ---
+		etag := utils.GenerateETag(credential.ID, credential.UpdatedAt)
+		if match := c.GetHeader("If-None-Match"); match != "" && match == etag {
+			c.Status(http.StatusNotModified)
+			return
+		}
+		c.Header("ETag", etag)
 
-        pass, _ := utils.Decrypt(cfg.AESKey, credential.PasswordEncrypted)
-        credential.PasswordEncrypted = pass
+		// --- Add Last-Modified ---
+		c.Header("Last-Modified", credential.UpdatedAt.UTC().Format(http.TimeFormat))
 
-        c.JSON(http.StatusOK, credential)
-    }
+		// Decrypt before sending
+		pass, _ := utils.Decrypt(cfg.AESKey, credential.PasswordEncrypted)
+		credential.PasswordEncrypted = pass
+
+		c.JSON(http.StatusOK, credential)
+	}
 }
+
+
 
 
 // UpdateCredential - Edit credential
