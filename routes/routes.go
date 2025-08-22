@@ -11,6 +11,7 @@ func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 	// public
 	r.POST("/auth/register", controllers.Register(cfg))
 	r.POST("/auth/login", controllers.Login(cfg))
+	r.POST("/auth/refresh", controllers.RefreshToken(cfg))
 
 
 	// protected
