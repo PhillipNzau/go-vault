@@ -49,6 +49,25 @@ func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 		subs.DELETE(":id", controllers.DeleteSubscription(cfg))
 	}
 
+	export := r.Group("/export")
+	export.Use(auth)
+
+	{
+		// Export
+	export.GET("/credentials/excel", controllers.ExportCredentialsExcel(cfg))
+	export.GET("/subscriptions/excel", controllers.ExportSubscriptionsExcel)
+	}
+
+	imports := r.Group("/import")
+	imports.Use(auth)
+
+	{
+		// Import
+	imports.POST("/credentials/excel", controllers.ImportCredentialsExcel(cfg))
+	imports.POST("/subscriptions/excel", controllers.ImportSubscriptionsExcel)
+	}
+
 	// analytics
 	r.GET("/analytics/subscriptions", auth, controllers.MonthlySummary(cfg))
+
 }
