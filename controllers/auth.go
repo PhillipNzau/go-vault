@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"net/http"
 	"time"
 
@@ -9,21 +11,20 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/phillip/vault/config"
 	"github.com/phillip/vault/models"
+	"github.com/phillip/vault/utils"
 )
 
 // =============================
-// Register
+// Register (send OTP only)
 // =============================
 func Register(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var input struct {
-			Name     string `json:"name" binding:"required"`
-			Email    string `json:"email" binding:"required,email"`
-			Password string `json:"password" binding:"required,min=8"`
+			Name  string `json:"name" binding:"required"`
+			Email string `json:"email" binding:"required,email"`
 		}
 
 		if err := c.ShouldBindJSON(&input); err != nil {
@@ -42,16 +43,12 @@ func Register(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		// Hash password
-		hash, _ := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
-
 		user := models.User{
-			ID:           primitive.NewObjectID(),
-			Name:         input.Name,
-			Email:        input.Email,
-			PasswordHash: string(hash),
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			ID:        primitive.NewObjectID(),
+			Name:      input.Name,
+			Email:     input.Email,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
 		}
 
 		// Insert new user
@@ -60,16 +57,17 @@ func Register(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		// Create tokens
-		accessToken, refreshToken, _ := createTokensForUser(user.ID, cfg)
+		// Generate OTP
+		otp := fmt.Sprintf("%06d", rand.Intn(1000000))
+		expiry := time.Now().Add(10 * time.Minute)
+		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"otp": otp, "otp_expiry": expiry}})
 
-		// Save refresh token
-		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"refresh_token": refreshToken}})
+		// Send OTP
+		go utils.SendEmail(user.Email, "Verify your account", "Your OTP is: "+otp)
 
 		c.JSON(http.StatusCreated, gin.H{
-			"status":        200,
-			"access_token":  accessToken,
-			"refresh_token": refreshToken,
+			"status":  200,
+			"message": "Registration successful, OTP sent to email",
 			"user": gin.H{
 				"id":    user.ID.Hex(),
 				"name":  user.Name,
@@ -80,13 +78,12 @@ func Register(cfg *config.Config) gin.HandlerFunc {
 }
 
 // =============================
-// Login
+// Login (send OTP only)
 // =============================
 func Login(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var input struct {
-			Email    string `json:"email" binding:"required,email"`
-			Password string `json:"password" binding:"required"`
+			Email string `json:"email" binding:"required,email"`
 		}
 
 		if err := c.ShouldBindJSON(&input); err != nil {
@@ -100,20 +97,60 @@ func Login(cfg *config.Config) gin.HandlerFunc {
 
 		var user models.User
 		if err := users.FindOne(ctx, bson.M{"email": input.Email}).Decode(&user); err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
 			return
 		}
 
-		// Compare password
-		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)) != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		// Generate OTP
+		otp := fmt.Sprintf("%06d", rand.Intn(1000000))
+		expiry := time.Now().Add(10 * time.Minute)
+		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"otp": otp, "otp_expiry": expiry}})
+
+		// Send OTP
+		go utils.SendEmail(user.Email, "Your Login OTP", "Your OTP is: "+otp)
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":  200,
+			"message": "OTP sent to email",
+		})
+	}
+}
+
+// =============================
+// Verify OTP (issue tokens)
+// =============================
+func VerifyOTP(cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var input struct {
+			Email string `json:"email" binding:"required,email"`
+			OTP   string `json:"otp" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+
+		users := cfg.MongoClient.Database(cfg.DBName).Collection("users")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var user models.User
+		if err := users.FindOne(ctx, bson.M{"email": input.Email}).Decode(&user); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid otp"})
+			return
+		}
+
+		// Check OTP
+		if user.OTP != input.OTP || time.Now().After(user.OTPExpiry) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "otp expired or invalid"})
+			return
+		}
+
+		// Clear OTP
+		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$unset": bson.M{"otp": "", "otp_expiry": ""}})
 
 		// Create tokens
 		accessToken, refreshToken, _ := createTokensForUser(user.ID, cfg)
-
-		// Save refresh token
 		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"refresh_token": refreshToken}})
 
 		c.JSON(http.StatusOK, gin.H{
@@ -130,7 +167,7 @@ func Login(cfg *config.Config) gin.HandlerFunc {
 }
 
 // =============================
-// Refresh Token
+// Refresh Token (unchanged)
 // =============================
 func RefreshToken(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -193,7 +230,7 @@ func createTokensForUser(uid primitive.ObjectID, cfg *config.Config) (accessToke
 	// Access Token (short-lived)
 	accessClaims := jwt.MapClaims{
 		"user_id": uid.Hex(),
-		"exp":     time.Now().Add(15 * time.Minute).Unix(), // 15 minutes
+		"exp":     time.Now().Add(15 * time.Minute).Unix(),
 		"iat":     time.Now().Unix(),
 	}
 	access := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
@@ -205,7 +242,7 @@ func createTokensForUser(uid primitive.ObjectID, cfg *config.Config) (accessToke
 	// Refresh Token (long-lived)
 	refreshClaims := jwt.MapClaims{
 		"user_id": uid.Hex(),
-		"exp":     time.Now().Add(7 * 24 * time.Hour).Unix(), // 7 days
+		"exp":     time.Now().Add(7 * 24 * time.Hour).Unix(),
 		"iat":     time.Now().Unix(),
 		"type":    "refresh",
 	}

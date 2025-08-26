@@ -13,6 +13,9 @@ func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 	r.POST("/auth/login", controllers.Login(cfg))
 	r.POST("/auth/refresh", controllers.RefreshToken(cfg))
 
+	// otp
+	r.POST("/auth/request-otp", controllers.RequestOTP(cfg))
+	r.POST("/auth/verify-otp", controllers.VerifyOTP(cfg))
 
 	// protected
 	auth := middleware.AuthMiddleware(cfg)

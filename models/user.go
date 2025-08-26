@@ -10,8 +10,9 @@ type User struct {
 	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	Name         string             `bson:"name" json:"name"`
 	Email        string             `bson:"email" json:"email"`
-	PasswordHash string             `bson:"password_hash" json:"-"`
 	RefreshToken string             `bson:"refresh_token,omitempty" json:"-"`
+	OTP          string             `bson:"otp,omitempty" json:"-"`
+	OTPExpiry    time.Time          `bson:"otp_expiry,omitempty" json:"-"`
 	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
 	UpdatedAt    time.Time          `bson:"updated_at" json:"updated_at"`
 }
