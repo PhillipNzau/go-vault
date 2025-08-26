@@ -25,6 +25,10 @@ func main() {
 		log.Fatalf("config load error: %v", err)
 	}
 
+	// Ensure indexes for all collections
+	config.EnsureAllIndexes(cfg.MongoClient, cfg.DBName)
+
+
 	// ✅ Ensure MongoDB connection is initialized
 	client := config.ConnectDB()
 	if client == nil {

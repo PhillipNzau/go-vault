@@ -73,6 +73,7 @@ func CreateCredential(cfg *config.Config) gin.HandlerFunc {
 func ListCredentials(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
+		fmt.Println("user_id in context:", uid)
 		userID, _ := primitive.ObjectIDFromHex(uid)
 
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("credentials")
