@@ -11,7 +11,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/phillip/vault/config"
 	"github.com/phillip/vault/models"
@@ -19,14 +18,13 @@ import (
 )
 
 // =============================
-// Register
+// Register (send OTP only)
 // =============================
 func Register(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var input struct {
-			Name     string `json:"name" binding:"required"`
-			Email    string `json:"email" binding:"required,email"`
-			Password string `json:"password" binding:"required,min=8"`
+			Name  string `json:"name" binding:"required"`
+			Email string `json:"email" binding:"required,email"`
 		}
 
 		if err := c.ShouldBindJSON(&input); err != nil {
@@ -45,16 +43,12 @@ func Register(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		// Hash password
-		hash, _ := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
-
 		user := models.User{
-			ID:           primitive.NewObjectID(),
-			Name:         input.Name,
-			Email:        input.Email,
-			PasswordHash: string(hash),
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			ID:        primitive.NewObjectID(),
+			Name:      input.Name,
+			Email:     input.Email,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
 		}
 
 		// Insert new user
@@ -66,10 +60,9 @@ func Register(cfg *config.Config) gin.HandlerFunc {
 		// Generate OTP
 		otp := fmt.Sprintf("%06d", rand.Intn(1000000))
 		expiry := time.Now().Add(10 * time.Minute)
-
 		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"otp": otp, "otp_expiry": expiry}})
 
-		// Send OTP email
+		// Send OTP
 		go utils.SendEmail(user.Email, "Verify your account", "Your OTP is: "+otp)
 
 		c.JSON(http.StatusCreated, gin.H{
@@ -85,13 +78,12 @@ func Register(cfg *config.Config) gin.HandlerFunc {
 }
 
 // =============================
-// Login
+// Login (send OTP only)
 // =============================
 func Login(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var input struct {
-			Email    string `json:"email" binding:"required,email"`
-			Password string `json:"password" binding:"required"`
+			Email string `json:"email" binding:"required,email"`
 		}
 
 		if err := c.ShouldBindJSON(&input); err != nil {
@@ -105,34 +97,27 @@ func Login(cfg *config.Config) gin.HandlerFunc {
 
 		var user models.User
 		if err := users.FindOne(ctx, bson.M{"email": input.Email}).Decode(&user); err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
-			return
-		}
-
-		// Compare password
-		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)) != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
 			return
 		}
 
 		// Generate OTP
 		otp := fmt.Sprintf("%06d", rand.Intn(1000000))
 		expiry := time.Now().Add(10 * time.Minute)
-
 		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"otp": otp, "otp_expiry": expiry}})
 
-		// Send OTP email
+		// Send OTP
 		go utils.SendEmail(user.Email, "Your Login OTP", "Your OTP is: "+otp)
 
 		c.JSON(http.StatusOK, gin.H{
 			"status":  200,
-			"message": "Login successful, OTP sent to email",
+			"message": "OTP sent to email",
 		})
 	}
 }
 
 // =============================
-// Verify OTP (new endpoint)
+// Verify OTP (issue tokens)
 // =============================
 func VerifyOTP(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -155,6 +140,7 @@ func VerifyOTP(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
+		// Check OTP
 		if user.OTP != input.OTP || time.Now().After(user.OTPExpiry) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "otp expired or invalid"})
 			return
@@ -181,7 +167,7 @@ func VerifyOTP(cfg *config.Config) gin.HandlerFunc {
 }
 
 // =============================
-// Refresh Token
+// Refresh Token (unchanged)
 // =============================
 func RefreshToken(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -244,7 +230,7 @@ func createTokensForUser(uid primitive.ObjectID, cfg *config.Config) (accessToke
 	// Access Token (short-lived)
 	accessClaims := jwt.MapClaims{
 		"user_id": uid.Hex(),
-		"exp":     time.Now().Add(15 * time.Minute).Unix(), // 15 minutes
+		"exp":     time.Now().Add(15 * time.Minute).Unix(),
 		"iat":     time.Now().Unix(),
 	}
 	access := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
@@ -256,7 +242,7 @@ func createTokensForUser(uid primitive.ObjectID, cfg *config.Config) (accessToke
 	// Refresh Token (long-lived)
 	refreshClaims := jwt.MapClaims{
 		"user_id": uid.Hex(),
-		"exp":     time.Now().Add(7 * 24 * time.Hour).Unix(), // 7 days
+		"exp":     time.Now().Add(7 * 24 * time.Hour).Unix(),
 		"iat":     time.Now().Unix(),
 		"type":    "refresh",
 	}
@@ -268,4 +254,3 @@ func createTokensForUser(uid primitive.ObjectID, cfg *config.Config) (accessToke
 
 	return accessToken, refreshToken, nil
 }
-
