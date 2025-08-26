@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"net/http"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 
 	"github.com/phillip/vault/config"
 	"github.com/phillip/vault/models"
+	"github.com/phillip/vault/utils"
 )
 
 // =============================
@@ -60,16 +63,18 @@ func Register(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		// Create tokens
-		accessToken, refreshToken, _ := createTokensForUser(user.ID, cfg)
+		// Generate OTP
+		otp := fmt.Sprintf("%06d", rand.Intn(1000000))
+		expiry := time.Now().Add(10 * time.Minute)
 
-		// Save refresh token
-		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"refresh_token": refreshToken}})
+		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"otp": otp, "otp_expiry": expiry}})
+
+		// Send OTP email
+		go utils.SendEmail(user.Email, "Verify your account", "Your OTP is: "+otp)
 
 		c.JSON(http.StatusCreated, gin.H{
-			"status":        200,
-			"access_token":  accessToken,
-			"refresh_token": refreshToken,
+			"status":  200,
+			"message": "Registration successful, OTP sent to email",
 			"user": gin.H{
 				"id":    user.ID.Hex(),
 				"name":  user.Name,
@@ -110,10 +115,56 @@ func Login(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
+		// Generate OTP
+		otp := fmt.Sprintf("%06d", rand.Intn(1000000))
+		expiry := time.Now().Add(10 * time.Minute)
+
+		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"otp": otp, "otp_expiry": expiry}})
+
+		// Send OTP email
+		go utils.SendEmail(user.Email, "Your Login OTP", "Your OTP is: "+otp)
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":  200,
+			"message": "Login successful, OTP sent to email",
+		})
+	}
+}
+
+// =============================
+// Verify OTP (new endpoint)
+// =============================
+func VerifyOTP(cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var input struct {
+			Email string `json:"email" binding:"required,email"`
+			OTP   string `json:"otp" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		users := cfg.MongoClient.Database(cfg.DBName).Collection("users")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var user models.User
+		if err := users.FindOne(ctx, bson.M{"email": input.Email}).Decode(&user); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid otp"})
+			return
+		}
+
+		if user.OTP != input.OTP || time.Now().After(user.OTPExpiry) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "otp expired or invalid"})
+			return
+		}
+
+		// Clear OTP
+		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$unset": bson.M{"otp": "", "otp_expiry": ""}})
+
 		// Create tokens
 		accessToken, refreshToken, _ := createTokensForUser(user.ID, cfg)
-
-		// Save refresh token
 		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"refresh_token": refreshToken}})
 
 		c.JSON(http.StatusOK, gin.H{
@@ -217,3 +268,4 @@ func createTokensForUser(uid primitive.ObjectID, cfg *config.Config) (accessToke
 
 	return accessToken, refreshToken, nil
 }
+
