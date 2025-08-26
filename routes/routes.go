@@ -67,6 +67,17 @@ func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 	imports.POST("/subscriptions/excel", controllers.ImportSubscriptionsExcel)
 	}
 
+	hubs := r.Group("/hubs")
+	hubs.Use(auth)
+	
+	{
+		hubs.POST("", controllers.CreateHub(cfg))
+		hubs.GET("", controllers.ListHubs(cfg))
+		hubs.GET(":id", controllers.GetHub(cfg))
+		hubs.PUT("/update/:id", controllers.UpdateHub(cfg))
+		hubs.DELETE("/delete/:id", controllers.DeleteHub(cfg))
+	}
+
 	// analytics
 	r.GET("/analytics/subscriptions", auth, controllers.MonthlySummary(cfg))
 
