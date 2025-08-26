@@ -22,7 +22,7 @@ func SendEmail(to, subject, body string) error {
 	m.SetHeader("From", from)
 	m.SetHeader("To", to)
 	m.SetHeader("Subject", subject)
-	m.SetBody("text/plain", body)
+	m.SetBody("text/html", body)
 
 	// Gmail SMTP server
 	d := gomail.NewDialer("smtp.gmail.com", 587, from, password)
