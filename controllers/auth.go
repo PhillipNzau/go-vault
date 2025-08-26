@@ -63,7 +63,10 @@ func Register(cfg *config.Config) gin.HandlerFunc {
 		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"otp": otp, "otp_expiry": expiry}})
 
 		// Send OTP
-		go utils.SendEmail(user.Email, "Verify your account", "Your OTP is: "+otp)
+		body := utils.BuildOtpEmail(user.Email, otp)
+		go utils.SendEmail(user.Email, "Verify your account", body)
+
+
 
 		c.JSON(http.StatusCreated, gin.H{
 			"status":  200,
@@ -107,7 +110,8 @@ func Login(cfg *config.Config) gin.HandlerFunc {
 		users.UpdateOne(ctx, bson.M{"_id": user.ID}, bson.M{"$set": bson.M{"otp": otp, "otp_expiry": expiry}})
 
 		// Send OTP
-		go utils.SendEmail(user.Email, "Your Login OTP", "Your OTP is: "+otp)
+		body := utils.BuildOtpEmail(user.Email, otp)
+		go utils.SendEmail(user.Email, "Your Login OTP", body)
 
 		c.JSON(http.StatusOK, gin.H{
 			"status":  200,
