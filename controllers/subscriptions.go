@@ -39,16 +39,24 @@ func CreateSubscription(cfg *config.Config) gin.HandlerFunc {
 		}
 
 		var sd, rd *time.Time
+		
+		const layoutDateOnly = "2006-01-02"
+
 		if input.StartDate != "" {
 			if t, err := time.Parse(time.RFC3339, input.StartDate); err == nil {
+				sd = &t
+			} else if t, err := time.Parse(layoutDateOnly, input.StartDate); err == nil {
 				sd = &t
 			}
 		}
 		if input.RenewalDate != "" {
 			if t, err := time.Parse(time.RFC3339, input.RenewalDate); err == nil {
 				rd = &t
+			} else if t, err := time.Parse(layoutDateOnly, input.RenewalDate); err == nil {
+				rd = &t
 			}
 		}
+
 
 		sub := models.Subscription{
 			ID:          primitive.NewObjectID(),
@@ -191,8 +199,26 @@ func UpdateSubscription(cfg *config.Config) gin.HandlerFunc {
 		update := bson.M{"updated_at": time.Now()}
 		if input.ServiceName != "" { update["service_name"] = input.ServiceName }
 		if input.PlanName != "" { update["plan_name"] = input.PlanName }
-		if input.StartDate != "" { if t, err := time.Parse(time.RFC3339, input.StartDate); err == nil { update["start_date"] = t } }
-		if input.RenewalDate != "" { if t, err := time.Parse(time.RFC3339, input.RenewalDate); err == nil { update["renewal_date"] = t } }
+
+		const layoutDateOnly = "2006-01-02"
+
+		if input.StartDate != "" {
+			if t, err := time.Parse(time.RFC3339, input.StartDate); err == nil {
+				update["start_date"] = t
+			} else if t, err := time.Parse(layoutDateOnly, input.StartDate); err == nil {
+				update["start_date"] = t
+			}
+		}
+
+		if input.RenewalDate != "" {
+			if t, err := time.Parse(time.RFC3339, input.RenewalDate); err == nil {
+				update["renewal_date"] = t
+			} else if t, err := time.Parse(layoutDateOnly, input.RenewalDate); err == nil {
+				update["renewal_date"] = t
+			}
+		}
+
+
 		if input.Price != nil { update["price"] = *input.Price }
 		if input.Currency != "" { update["currency"] = input.Currency }
 		if input.Status != "" { update["status"] = input.Status }
