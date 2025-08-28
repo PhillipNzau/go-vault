@@ -18,6 +18,27 @@ import (
 )
 
 // CreateSubscription - Only the authenticated user can create their own subscription
+// parseDateFlexible attempts to parse a date string in RFC3339 or YYYY-MM-DD formats
+func parseDateFlexible(dateStr string) (*time.Time, error) {
+	if dateStr == "" {
+		return nil, nil
+	}
+
+	// Try full RFC3339 first (e.g. "1984-07-17T00:00:00Z")
+	if t, err := time.Parse(time.RFC3339, dateStr); err == nil {
+		return &t, nil
+	}
+
+	// Fallback to date-only format (e.g. "1984-07-17")
+	if t, err := time.Parse("2006-01-02", dateStr); err == nil {
+		return &t, nil
+	}
+
+	// If both fail, return an error
+	return nil, fmt.Errorf("invalid date format: %s", dateStr)
+}
+
+
 func CreateSubscription(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
@@ -38,25 +59,8 @@ func CreateSubscription(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		var sd, rd *time.Time
-		
-		const layoutDateOnly = "2006-01-02"
-
-		if input.StartDate != "" {
-			if t, err := time.Parse(time.RFC3339, input.StartDate); err == nil {
-				sd = &t
-			} else if t, err := time.Parse(layoutDateOnly, input.StartDate); err == nil {
-				sd = &t
-			}
-		}
-		if input.RenewalDate != "" {
-			if t, err := time.Parse(time.RFC3339, input.RenewalDate); err == nil {
-				rd = &t
-			} else if t, err := time.Parse(layoutDateOnly, input.RenewalDate); err == nil {
-				rd = &t
-			}
-		}
-
+		sd, _ := parseDateFlexible(input.StartDate)
+		rd, _ := parseDateFlexible(input.RenewalDate)
 
 		sub := models.Subscription{
 			ID:          primitive.NewObjectID(),
@@ -200,23 +204,14 @@ func UpdateSubscription(cfg *config.Config) gin.HandlerFunc {
 		if input.ServiceName != "" { update["service_name"] = input.ServiceName }
 		if input.PlanName != "" { update["plan_name"] = input.PlanName }
 
-		const layoutDateOnly = "2006-01-02"
-
-		if input.StartDate != "" {
-			if t, err := time.Parse(time.RFC3339, input.StartDate); err == nil {
-				update["start_date"] = t
-			} else if t, err := time.Parse(layoutDateOnly, input.StartDate); err == nil {
-				update["start_date"] = t
-			}
+		if t, err := parseDateFlexible(input.StartDate); err == nil && t != nil {
+			update["start_date"] = *t
 		}
 
-		if input.RenewalDate != "" {
-			if t, err := time.Parse(time.RFC3339, input.RenewalDate); err == nil {
-				update["renewal_date"] = t
-			} else if t, err := time.Parse(layoutDateOnly, input.RenewalDate); err == nil {
-				update["renewal_date"] = t
-			}
+		if t, err := parseDateFlexible(input.RenewalDate); err == nil && t != nil {
+			update["renewal_date"] = *t
 		}
+
 
 
 		if input.Price != nil { update["price"] = *input.Price }
