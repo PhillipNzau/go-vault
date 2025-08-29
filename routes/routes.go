@@ -56,6 +56,7 @@ func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 		// Export
 	export.GET("/credentials/excel", controllers.ExportCredentialsExcel(cfg))
 	export.GET("/subscriptions/excel", controllers.ExportSubscriptionsExcel)
+	export.GET("/resources/excel", controllers.ExportResourcesExcel)
 	}
 
 	imports := r.Group("/import")
@@ -65,6 +66,7 @@ func SetupRoutes(r *gin.Engine, cfg *config.Config) {
 		// Import
 	imports.POST("/credentials/excel", controllers.ImportCredentialsExcel(cfg))
 	imports.POST("/subscriptions/excel", controllers.ImportSubscriptionsExcel)
+	// imports.POST("/resources/excel", controllers.ImportResourcesExcel)
 	}
 
 	hubs := r.Group("/hubs")

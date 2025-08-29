@@ -212,8 +212,6 @@ func UpdateSubscription(cfg *config.Config) gin.HandlerFunc {
 			update["renewal_date"] = *t
 		}
 
-
-
 		if input.Price != nil { update["price"] = *input.Price }
 		if input.Currency != "" { update["currency"] = input.Currency }
 		if input.Status != "" { update["status"] = input.Status }
