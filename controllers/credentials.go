@@ -21,7 +21,12 @@ import (
 func CreateCredential(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
-		userID, _ := primitive.ObjectIDFromHex(uid)
+		userID, err := primitive.ObjectIDFromHex(uid)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+			return
+		}
+
 
 		var input struct {
 			SiteName string `json:"site_name" binding:"required"`
@@ -73,8 +78,12 @@ func CreateCredential(cfg *config.Config) gin.HandlerFunc {
 func ListCredentials(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
-		fmt.Println("user_id in context:", uid)
-		userID, _ := primitive.ObjectIDFromHex(uid)
+		userID, err := primitive.ObjectIDFromHex(uid)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+			return
+		}
+
 
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("credentials")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -127,7 +136,11 @@ func ListCredentials(cfg *config.Config) gin.HandlerFunc {
 		// Decrypt passwords for output
 		out := make([]gin.H, 0, len(creds))
 		for _, cr := range creds {
-			pass, _ := utils.Decrypt(cfg.AESKey, cr.PasswordEncrypted)
+			pass, err := utils.Decrypt(cfg.AESKey, cr.PasswordEncrypted)
+			if err != nil {
+				pass = "" // or skip the record, or log it
+			}
+
 			out = append(out, gin.H{
 				"id":         cr.ID.Hex(),
 				"site_name":  cr.SiteName,
@@ -149,7 +162,12 @@ func ListCredentials(cfg *config.Config) gin.HandlerFunc {
 func GetCredential(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
-		userID, _ := primitive.ObjectIDFromHex(uid)
+		userID, err := primitive.ObjectIDFromHex(uid)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+			return
+		}
+
 
 		credID, err := primitive.ObjectIDFromHex(c.Param("id"))
 		if err != nil {
@@ -196,7 +214,12 @@ func GetCredential(cfg *config.Config) gin.HandlerFunc {
 func UpdateCredential(cfg *config.Config) gin.HandlerFunc {
     return func(c *gin.Context) {
         uid := c.GetString("user_id")
-        userID, _ := primitive.ObjectIDFromHex(uid)
+        userID, err := primitive.ObjectIDFromHex(uid)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+			return
+		}
+
 
         oid, err := primitive.ObjectIDFromHex(c.Param("id"))
         if err != nil {
@@ -271,7 +294,12 @@ func UpdateCredential(cfg *config.Config) gin.HandlerFunc {
 func DeleteCredential(cfg *config.Config) gin.HandlerFunc {
     return func(c *gin.Context) {
         uid := c.GetString("user_id")
-        userID, _ := primitive.ObjectIDFromHex(uid)
+        userID, err := primitive.ObjectIDFromHex(uid)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+			return
+		}
+
 
         oid, err := primitive.ObjectIDFromHex(c.Param("id"))
         if err != nil {
