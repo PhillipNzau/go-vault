@@ -41,11 +41,12 @@ func main() {
 	// CORS configuration
 	r.Use(cors.New(cors.Config{
 		AllowOrigins: []string{
-		"https://sub-safe-two.vercel.app",
-		"http://localhost:4200",
+			"https://sub-safe-two.vercel.app",
+			"http://localhost:4200",
 		},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowHeaders: []string{"Origin", "Content-Type", "Authorization", "If-None-Match", "If-Modified-Since",
+		},
 		ExposeHeaders:    []string{"ETag", "Last-Modified", "Content-Length"}, 
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
