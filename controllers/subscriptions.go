@@ -38,7 +38,6 @@ func parseDateFlexible(dateStr string) (*time.Time, error) {
 	return nil, fmt.Errorf("invalid date format: %s", dateStr)
 }
 
-
 func CreateSubscription(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
@@ -177,74 +176,139 @@ func GetSubscription(cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-
-
 // UpdateSubscription - Only the owner can update their subscription
 func UpdateSubscription(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// ✅ Validate user ID
 		uid := c.GetString("user_id")
-		userID, _ := primitive.ObjectIDFromHex(uid)
-		id := c.Param("id")
-		oid, _ := primitive.ObjectIDFromHex(id)
-		var input struct {
-			ServiceName string  `json:"service_name"`
-			PlanName    string  `json:"plan_name"`
-			StartDate   string  `json:"start_date"`
-			RenewalDate string  `json:"renewal_date"`
-			Price       *float64 `json:"price"`
-			Currency    string  `json:"currency"`
-			Status      string  `json:"status"`
-			Notes       string  `json:"notes"`
+		if uid == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
 		}
+
+		userID, err := primitive.ObjectIDFromHex(uid)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+			return
+		}
+
+		// ✅ Validate object ID
+		id := c.Param("id")
+		oid, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subscription id"})
+			return
+		}
+
+		// ✅ Bind request JSON
+		var input struct {
+			ServiceName string   `json:"service_name"`
+			PlanName    string   `json:"plan_name"`
+			StartDate   string   `json:"start_date"`
+			RenewalDate string   `json:"renewal_date"`
+			Price       *float64 `json:"price"`
+			Currency    string   `json:"currency"`
+			Status      string   `json:"status"`
+			Notes       string   `json:"notes"`
+		}
+
 		if err := c.ShouldBindJSON(&input); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		update := bson.M{"updated_at": time.Now()}
-		if input.ServiceName != "" { update["service_name"] = input.ServiceName }
-		if input.PlanName != "" { update["plan_name"] = input.PlanName }
 
+		// ✅ Prepare update document
+		update := bson.M{"updated_at": time.Now()}
+
+		if input.ServiceName != "" {
+			update["service_name"] = input.ServiceName
+		}
+		if input.PlanName != "" {
+			update["plan_name"] = input.PlanName
+		}
 		if t, err := parseDateFlexible(input.StartDate); err == nil && t != nil {
 			update["start_date"] = *t
 		}
-
 		if t, err := parseDateFlexible(input.RenewalDate); err == nil && t != nil {
 			update["renewal_date"] = *t
 		}
+		if input.Price != nil {
+			update["price"] = *input.Price
+		}
+		if input.Currency != "" {
+			update["currency"] = input.Currency
+		}
+		if input.Status != "" {
+			update["status"] = input.Status
+		}
+		if input.Notes != "" {
+			update["notes"] = input.Notes
+		}
 
-		if input.Price != nil { update["price"] = *input.Price }
-		if input.Currency != "" { update["currency"] = input.Currency }
-		if input.Status != "" { update["status"] = input.Status }
-		if input.Notes != "" { update["notes"] = input.Notes }
+		// ❗ Make sure at least one field (other than `updated_at`) is being updated
+		if len(update) == 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+			return
+		}
+
+		// ✅ Update with ownership enforcement
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("subscriptions")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		// Only update if user_id matches
+
 		res, err := col.UpdateOne(ctx, bson.M{"_id": oid, "user_id": userID}, bson.M{"$set": update})
-		if err != nil || res.MatchedCount == 0 {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found or not owned"})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "updated"})
+		if res.MatchedCount == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "subscription not found or not owned"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "subscription updated"})
 	}
 }
+
 
 // DeleteSubscription - Only the owner can delete their subscription
 func DeleteSubscription(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// ✅ Extract and validate user ID
 		uid := c.GetString("user_id")
-		userID, _ := primitive.ObjectIDFromHex(uid)
-		id := c.Param("id")
-		oid, _ := primitive.ObjectIDFromHex(id)
+		if uid == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		userID, err := primitive.ObjectIDFromHex(uid)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+			return
+		}
+
+		// ✅ Extract and validate subscription ID
+		idParam := c.Param("id")
+		oid, err := primitive.ObjectIDFromHex(idParam)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subscription id"})
+			return
+		}
+
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("subscriptions")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		// Only delete if user_id matches
+
+		// ✅ Delete only if user owns the subscription
 		res, err := col.DeleteOne(ctx, bson.M{"_id": oid, "user_id": userID})
-		if err != nil || res.DeletedCount == 0 {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found or not owned"})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete subscription"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+		if res.DeletedCount == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "subscription not found or not owned"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "subscription deleted", "id": oid.Hex()})
 	}
 }

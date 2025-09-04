@@ -207,118 +207,144 @@ func GetCredential(cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-
-
-
 // UpdateCredential - Edit credential
 func UpdateCredential(cfg *config.Config) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        uid := c.GetString("user_id")
-        userID, err := primitive.ObjectIDFromHex(uid)
+	return func(c *gin.Context) {
+		// ✅ Get and validate user ID
+		uid := c.GetString("user_id")
+		if uid == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+
+		userID, err := primitive.ObjectIDFromHex(uid)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
 			return
 		}
 
+		// ✅ Get and validate credential ID
+		oid, err := primitive.ObjectIDFromHex(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid credential id"})
+			return
+		}
 
-        oid, err := primitive.ObjectIDFromHex(c.Param("id"))
-        if err != nil {
-            c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
-            return
-        }
+		// ✅ Bind input
+		var input struct {
+			SiteName string `json:"site_name"`
+			Username string `json:"username"`
+			Password string `json:"password"`
+			LoginURL string `json:"login_url"`
+			Notes    string `json:"notes"`
+			Category string `json:"category"`
+		}
 
-        var input struct {
-            SiteName string `json:"site_name"`
-            Username string `json:"username"`
-            Password string `json:"password"`
-            LoginURL string `json:"login_url"`
-            Notes    string `json:"notes"`
-            Category string `json:"category"`
-        }
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 
-        if err := c.ShouldBindJSON(&input); err != nil {
-            c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-            return
-        }
+		// ✅ Find the credential and ensure ownership
+		col := cfg.MongoClient.Database(cfg.DBName).Collection("credentials")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-        // Ensure ownership
-        col := cfg.MongoClient.Database(cfg.DBName).Collection("credentials")
-        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-        defer cancel()
+		var existing models.Credential
+		err = col.FindOne(ctx, bson.M{"_id": oid, "user_id": userID}).Decode(&existing)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "credential not found or not owned"})
+			return
+		}
 
-        var existingCredential models.Credential
-        err = col.FindOne(ctx, bson.M{"_id": oid, "user_id": userID}).Decode(&existingCredential)
-        if err != nil {
-            c.JSON(http.StatusNotFound, gin.H{"error": "credential not found or not owned"})
-            return
-        }
+		// ✅ Build update document
+		update := bson.M{"updated_at": time.Now()}
 
-        update := bson.M{"updated_at": time.Now()}
+		if input.SiteName != "" {
+			update["site_name"] = input.SiteName
+		}
+		if input.Username != "" {
+			update["username"] = input.Username
+		}
+		if input.Password != "" {
+			enc, err := utils.Encrypt(cfg.AESKey, input.Password)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt password"})
+				return
+			}
+			update["password_encrypted"] = enc
+		}
+		if input.LoginURL != "" {
+			update["login_url"] = input.LoginURL
+		}
+		if input.Notes != "" {
+			update["notes"] = input.Notes
+		}
+		if input.Category != "" {
+			update["category"] = input.Category
+		}
 
-        if input.SiteName != "" {
-            update["site_name"] = input.SiteName
-        }
-        if input.Username != "" {
-            update["username"] = input.Username
-        }
-        if input.Password != "" {
-            enc, err := utils.Encrypt(cfg.AESKey, input.Password)
-            if err != nil {
-                c.JSON(http.StatusInternalServerError, gin.H{"error": "encryption failed"})
-                return
-            }
-            update["password_encrypted"] = enc
-        }
-        if input.LoginURL != "" {
-            update["login_url"] = input.LoginURL
-        }
-        if input.Notes != "" {
-            update["notes"] = input.Notes
-        }
-        if input.Category != "" {
-            update["category"] = input.Category
-        }
+		// ❗ Ensure at least one field is being updated (besides updated_at)
+		if len(update) == 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+			return
+		}
 
-        res, err := col.UpdateOne(ctx, bson.M{"_id": oid, "user_id": userID}, bson.M{"$set": update})
-        if err != nil || res.MatchedCount == 0 {
-            c.JSON(http.StatusNotFound, gin.H{"error": "not found or not owned"})
-            return
-        }
+		// ✅ Perform update
+		res, err := col.UpdateOne(ctx, bson.M{"_id": oid, "user_id": userID}, bson.M{"$set": update})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update credential"})
+			return
+		}
+		if res.MatchedCount == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "credential not found or not owned"})
+			return
+		}
 
-        c.JSON(http.StatusOK, gin.H{"message": "updated"})
-    }
+		c.JSON(http.StatusOK, gin.H{"message": "credential updated", "id": oid.Hex()})
+	}
 }
-
 
 // DeleteCredential - Remove credential
 func DeleteCredential(cfg *config.Config) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        uid := c.GetString("user_id")
-        userID, err := primitive.ObjectIDFromHex(uid)
+	return func(c *gin.Context) {
+		// ✅ Extract and validate user ID
+		uid := c.GetString("user_id")
+		if uid == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		userID, err := primitive.ObjectIDFromHex(uid)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
 			return
 		}
 
+		// ✅ Extract and validate credential ID
+		idParam := c.Param("id")
+		oid, err := primitive.ObjectIDFromHex(idParam)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid credential id"})
+			return
+		}
 
-        oid, err := primitive.ObjectIDFromHex(c.Param("id"))
-        if err != nil {
-            c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
-            return
-        }
+		col := cfg.MongoClient.Database(cfg.DBName).Collection("credentials")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-        col := cfg.MongoClient.Database(cfg.DBName).Collection("credentials")
-        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-        defer cancel()
+		// ✅ Delete only if the user owns the credential
+		res, err := col.DeleteOne(ctx, bson.M{"_id": oid, "user_id": userID})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete credential"})
+			return
+		}
+		if res.DeletedCount == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "credential not found or not owned"})
+			return
+		}
 
-        // Ensure ownership before deletion
-        res, err := col.DeleteOne(ctx, bson.M{"_id": oid, "user_id": userID})
-        if err != nil || res.DeletedCount == 0 {
-            c.JSON(http.StatusNotFound, gin.H{"error": "not found or not owned"})
-            return
-        }
-
-        c.JSON(http.StatusOK, gin.H{"message": "deleted"})
-    }
+		c.JSON(http.StatusOK, gin.H{"message": "credential deleted", "id": oid.Hex()})
+	}
 }
+
 
