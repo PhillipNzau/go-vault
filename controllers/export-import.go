@@ -23,74 +23,95 @@ import (
 // Export Credentials to Excel
 func ExportCredentialsExcel(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cursor, err := config.GetCollection("credentials").Find(ctx, bson.M{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	defer cursor.Close(ctx)
-
-	var credentials []*models.Credential
-	if err := cursor.All(ctx, &credentials); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	f := excelize.NewFile()
-	sheet := "Credentials"
-	f.NewSheet(sheet)
-
-	// Headers
-	headers := []string{"ID", "UserID", "SiteName", "Username", "Password", "LoginURL", "Notes", "Category"}
-	for i, h := range headers {
-		cell := string(rune('A' + i)) + "1"
-		f.SetCellValue(sheet, cell, h)
-	}
-
-	// Rows
-	for i, cred := range credentials {
-
-		row := strconv.Itoa(i + 2)
-		// 🔑 decrypt password before exporting
-		password, _ := utils.Decrypt(cfg.AESKey, cred.PasswordEncrypted)
-		if err != nil {
-			password = "[decryption error]"
+		uid := c.GetString("user_id")
+		if uid == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
 		}
-		f.SetCellValue(sheet, "A"+row, cred.ID.Hex())
-		f.SetCellValue(sheet, "B"+row, cred.UserID.Hex())
-		f.SetCellValue(sheet, "C"+row, cred.SiteName)
-		f.SetCellValue(sheet, "D"+row, cred.Username)
-		f.SetCellValue(sheet, "E"+row, password)
-		f.SetCellValue(sheet, "F"+row, cred.LoginURL)
-		f.SetCellValue(sheet, "G"+row, cred.Notes)
-		f.SetCellValue(sheet, "H"+row, cred.Category)
-	}
 
-	c.Header("Content-Disposition", "attachment; filename=credentials.xlsx")
-	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		userID, err := primitive.ObjectIDFromHex(uid)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid user id"})
+			return
+		}
 
-	if err := f.Write(c.Writer); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		filter := bson.M{"user_id": userID}
+		cursor, err := config.GetCollection("credentials").Find(ctx, filter)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer cursor.Close(ctx)
+
+		var credentials []*models.Credential
+		if err := cursor.All(ctx, &credentials); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		f := excelize.NewFile()
+		sheet := "Credentials"
+		f.NewSheet(sheet)
+
+		headers := []string{"SiteName", "Username", "Password", "LoginURL", "Notes", "Category"}
+		for i, h := range headers {
+			cell := string(rune('A'+i)) + "1"
+			f.SetCellValue(sheet, cell, h)
+		}
+
+		for i, cred := range credentials {
+			row := strconv.Itoa(i + 2)
+			password, err := utils.Decrypt(cfg.AESKey, cred.PasswordEncrypted)
+			if err != nil {
+				password = "[decryption error]"
+			}
+
+			f.SetCellValue(sheet, "A"+row, cred.SiteName)
+			f.SetCellValue(sheet, "B"+row, cred.Username)
+			f.SetCellValue(sheet, "C"+row, password)
+			f.SetCellValue(sheet, "D"+row, cred.LoginURL)
+			f.SetCellValue(sheet, "E"+row, cred.Notes)
+			f.SetCellValue(sheet, "F"+row, cred.Category)
+		}
+
+		c.Header("Content-Disposition", "attachment; filename=credentials.xlsx")
+		c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+		if err := f.Write(c.Writer); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 	}
 }
 
+
+
 // Export Subscriptions to Excel
 func ExportSubscriptionsExcel(c *gin.Context) {
+	uid := c.GetString("user_id")
+	if uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID, err := primitive.ObjectIDFromHex(uid)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cursor, err := config.GetCollection("subscriptions").Find(ctx, bson.M{})
+	cursor, err := config.GetCollection("subscriptions").Find(ctx, bson.M{"user_id": userID})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	defer cursor.Close(ctx)
 
-	var subscriptions []*models.Subscription
+	var subscriptions []models.Subscription
 	if err := cursor.All(ctx, &subscriptions); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -100,30 +121,31 @@ func ExportSubscriptionsExcel(c *gin.Context) {
 	sheet := "Subscriptions"
 	f.NewSheet(sheet)
 
-	// Headers
-	headers := []string{"ID", "ServiceName", "PlanName", "StartDate", "RenewalDate", "Price", "Currency", "Status"}
+	headers := []string{
+		"ServiceName", "PlanName", "StartDate", "RenewalDate", "Price",
+		"Currency", "Status", "Notes", "CreatedAt", "UpdatedAt",
+	}
 	for i, h := range headers {
-		cell := string(rune('A' + i)) + "1"
+		cell := string(rune('A'+i)) + "1"
 		f.SetCellValue(sheet, cell, h)
 	}
 
-	// Rows
 	for i, s := range subscriptions {
 		row := strconv.Itoa(i + 2)
-		f.SetCellValue(sheet, "A"+row, s.ID.Hex())
-		f.SetCellValue(sheet, "B"+row, s.ServiceName)
-		f.SetCellValue(sheet, "C"+row, s.PlanName)
-
+		f.SetCellValue(sheet, "A"+row, s.ServiceName)
+		f.SetCellValue(sheet, "B"+row, s.PlanName)
 		if s.StartDate != nil {
-			f.SetCellValue(sheet, "D"+row, s.StartDate.Format("2006-01-02"))
+			f.SetCellValue(sheet, "C"+row, s.StartDate.Format("2006-01-02"))
 		}
 		if s.RenewalDate != nil {
-			f.SetCellValue(sheet, "E"+row, s.RenewalDate.Format("2006-01-02"))
+			f.SetCellValue(sheet, "D"+row, s.RenewalDate.Format("2006-01-02"))
 		}
-
-		f.SetCellValue(sheet, "F"+row, s.Price)
-		f.SetCellValue(sheet, "G"+row, s.Currency)
-		f.SetCellValue(sheet, "H"+row, s.Status)
+		f.SetCellValue(sheet, "E"+row, s.Price)
+		f.SetCellValue(sheet, "F"+row, s.Currency)
+		f.SetCellValue(sheet, "G"+row, s.Status)
+		f.SetCellValue(sheet, "H"+row, s.Notes)
+		f.SetCellValue(sheet, "I"+row, s.CreatedAt.Format("2006-01-02 15:04:05"))
+		f.SetCellValue(sheet, "J"+row, s.UpdatedAt.Format("2006-01-02 15:04:05"))
 	}
 
 	c.Header("Content-Disposition", "attachment; filename=subscriptions.xlsx")
@@ -134,12 +156,26 @@ func ExportSubscriptionsExcel(c *gin.Context) {
 	}
 }
 
+
+
 // Export Resources to Excel
 func ExportResourcesExcel(c *gin.Context) {
+	uid := c.GetString("user_id")
+	if uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID, err := primitive.ObjectIDFromHex(uid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid user id"})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cursor, err := config.GetCollection("hubs").Find(ctx, bson.M{})
+	filter := bson.M{"user_id": userID}
+	cursor, err := config.GetCollection("hubs").Find(ctx, filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -156,22 +192,19 @@ func ExportResourcesExcel(c *gin.Context) {
 	sheet := "Hubs"
 	f.NewSheet(sheet)
 
-	// Headers
-	headers := []string{"ID", "Title", "Type", "Value", "Notes", "CreatedAt"}
+	headers := []string{"Title", "Type", "Value", "Notes", "CreatedAt"}
 	for i, h := range headers {
 		cell := string(rune('A' + i)) + "1"
 		f.SetCellValue(sheet, cell, h)
 	}
 
-	// Rows
 	for i, s := range hubs {
 		row := strconv.Itoa(i + 2)
-		f.SetCellValue(sheet, "A"+row, s.ID.Hex())
-		f.SetCellValue(sheet, "B"+row, s.Title)
-		f.SetCellValue(sheet, "C"+row, s.Type)
-		f.SetCellValue(sheet, "D"+row, s.Value)
-		f.SetCellValue(sheet, "E"+row, s.Notes)
-		f.SetCellValue(sheet, "F"+row, s.CreatedAt)
+		f.SetCellValue(sheet, "A"+row, s.Title)
+		f.SetCellValue(sheet, "B"+row, s.Type)
+		f.SetCellValue(sheet, "C"+row, s.Value)
+		f.SetCellValue(sheet, "D"+row, s.Notes)
+		f.SetCellValue(sheet, "E"+row, s.CreatedAt.Format("2006-01-02 15:04:05"))
 	}
 
 	c.Header("Content-Disposition", "attachment; filename=resources.xlsx")
@@ -181,6 +214,7 @@ func ExportResourcesExcel(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 	}
 }
+
 
 //
 // ================== IMPORT ==================
@@ -232,11 +266,11 @@ func ImportCredentialsExcel(cfg *config.Config) gin.HandlerFunc {
 			if i == 0 {
 				continue // skip header
 			}
-			if len(row) < 8 {
-				continue
+			if len(row) < 6 {
+				continue // skip incomplete rows
 			}
 
-			enc, err := utils.Encrypt(cfg.AESKey, row[4])
+			enc, err := utils.Encrypt(cfg.AESKey, row[2]) // password is column C (index 2)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt password"})
 				return
@@ -245,12 +279,12 @@ func ImportCredentialsExcel(cfg *config.Config) gin.HandlerFunc {
 			cred := &models.Credential{
 				ID:                primitive.NewObjectID(),
 				UserID:            userID,
-				SiteName:          row[2],
-				Username:          row[3],
-				PasswordEncrypted: enc,
-				LoginURL:          row[5],
-				Notes:             row[6],
-				Category:          row[7],
+				SiteName:          row[0], // SiteName = A
+				Username:          row[1], // Username = B
+				PasswordEncrypted: enc,    // Password = C (encrypted)
+				LoginURL:          row[3], // LoginURL = D
+				Notes:             row[4], // Notes = E
+				Category:          row[5], // Category = F
 				CreatedAt:         time.Now(),
 				UpdatedAt:         time.Now(),
 			}
@@ -274,22 +308,21 @@ func ImportCredentialsExcel(cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
+
 // Import Subscriptions from Excel
 func ImportSubscriptionsExcel(c *gin.Context) {
-	// 1. Get logged-in user ID from context
-    uid := c.GetString("user_id")
-    if uid == "" {
-        c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-        return
-    }
+	uid := c.GetString("user_id")
+	if uid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 
-    userID, err := primitive.ObjectIDFromHex(uid)
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid user id"})
-        return
-    }
+	userID, err := primitive.ObjectIDFromHex(uid)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
+		return
+	}
 
-	// 2. Handle uploaded file
 	file, err := c.FormFile("file")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
@@ -311,41 +344,70 @@ func ImportSubscriptionsExcel(c *gin.Context) {
 
 	rows, err := f.GetRows("Subscriptions")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "sheet Subscriptions not found"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sheet 'Subscriptions' not found"})
 		return
 	}
 
-	// 3. Build subscription list
 	var subs []*models.Subscription
 	for i, row := range rows {
 		if i == 0 {
 			continue // skip header
 		}
-		if len(row) < 8 {
-			continue
-		}
-		price, _ := strconv.ParseFloat(row[5], 64)
 
-		subs = append(subs, &models.Subscription{
+		if len(row) < 7 {
+			continue // skip incomplete rows
+		}
+
+		price, err := strconv.ParseFloat(row[4], 64)
+		if err != nil {
+			price = 0
+		}
+
+		// Optional date parsing
+		var startDate *time.Time
+		if t, err := time.Parse("2006-01-02", row[2]); err == nil {
+			startDate = &t
+		}
+
+		var renewalDate *time.Time
+		if t, err := time.Parse("2006-01-02", row[3]); err == nil {
+			renewalDate = &t
+		}
+
+		sub := &models.Subscription{
 			ID:          primitive.NewObjectID(),
-			UserID:      userID,         // 🔑 attach logged-in user
-			ServiceName: row[1],
-			PlanName:    row[2],
+			UserID:      userID,
+			ServiceName: row[0],
+			PlanName:    row[1],
+			StartDate:   startDate,
+			RenewalDate: renewalDate,
 			Price:       price,
-			Currency:    row[6],
-			Status:      row[7],
+			Currency:    row[5],
+			Status:      row[6],
+			Notes:       "",
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
-		})
+		}
+
+		if len(row) >= 8 {
+			sub.Notes = row[7]
+		}
+
+		subs = append(subs, sub)
 	}
 
-	// 4. Insert into MongoDB
+	if len(subs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no valid data to import"})
+		return
+	}
+
+	// Insert into DB
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var docs []interface{}
-	for _, s := range subs {
-		docs = append(docs, s)
+	docs := make([]interface{}, len(subs))
+	for i, s := range subs {
+		docs[i] = s
 	}
 
 	if _, err := config.GetCollection("subscriptions").InsertMany(ctx, docs); err != nil {
@@ -355,6 +417,7 @@ func ImportSubscriptionsExcel(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"imported": len(subs)})
 }
+
 
 // Import Resources from Excel
 func ImportResourcesExcel(c *gin.Context) {

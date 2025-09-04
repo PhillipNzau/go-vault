@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"time"
@@ -67,8 +69,6 @@ func CreateHub(cfg *config.Config) gin.HandlerFunc {
 func ListHubs(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		uid := c.GetString("user_id")
-		fmt.Println("user_id in context:", uid)
-
 		userID, err := primitive.ObjectIDFromHex(uid)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
@@ -79,7 +79,8 @@ func ListHubs(cfg *config.Config) gin.HandlerFunc {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		cursor, err := col.Find(ctx, bson.M{"user_id": userID})
+		filter := bson.M{"user_id": userID}
+		cursor, err := col.Find(ctx, filter)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch hub entries"})
 			return
@@ -91,9 +92,34 @@ func ListHubs(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
+		// --- Generate ETag and Last-Modified ---
+		combined := ""
+		var lastModified time.Time
+		for _, h := range hubs {
+			combined += fmt.Sprintf("%s-%d", h.ID.Hex(), h.UpdatedAt.UnixNano())
+			if h.UpdatedAt.After(lastModified) {
+				lastModified = h.UpdatedAt
+			}
+		}
+		hash := md5.Sum([]byte(combined))
+		collectionETag := `"` + hex.EncodeToString(hash[:]) + `"`
+
+		// Check If-None-Match header
+		if match := c.GetHeader("If-None-Match"); match != "" && match == collectionETag {
+			c.Status(http.StatusNotModified)
+			return
+		}
+		c.Header("ETag", collectionETag)
+
+		// Last-Modified header
+		if !lastModified.IsZero() {
+			c.Header("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
+		}
+
 		c.JSON(http.StatusOK, hubs)
 	}
 }
+
 
 // GetHub - view single hub item
 func GetHub(cfg *config.Config) gin.HandlerFunc {
@@ -125,19 +151,26 @@ func GetHub(cfg *config.Config) gin.HandlerFunc {
 // UpdateHub - Edit hub
 func UpdateHub(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// ✅ Get and validate user ID
 		uid := c.GetString("user_id")
+		if uid == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
 		userID, err := primitive.ObjectIDFromHex(uid)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user ID"})
 			return
 		}
 
+		// ✅ Get and validate Hub ID
 		oid, err := primitive.ObjectIDFromHex(c.Param("id"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid hub ID"})
 			return
 		}
 
+		// ✅ Parse input
 		var input struct {
 			Title string `json:"title"`
 			Type  string `json:"type"`
@@ -150,6 +183,7 @@ func UpdateHub(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
+		// ✅ Prepare update fields
 		update := bson.M{"updated_at": time.Now()}
 		if input.Title != "" {
 			update["title"] = input.Title
@@ -164,31 +198,43 @@ func UpdateHub(cfg *config.Config) gin.HandlerFunc {
 			update["notes"] = input.Notes
 		}
 
+		// ✅ Perform update with ownership check
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("hubs")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		res, err := col.UpdateOne(ctx, bson.M{"_id": oid, "user_id": userID}, bson.M{"$set": update})
-		if err != nil || res.MatchedCount == 0 {
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update hub"})
+			return
+		}
+		if res.MatchedCount == 0 {
 			c.JSON(http.StatusNotFound, gin.H{"error": "hub entry not found or not owned"})
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"message": "hub entry updated"})
+		c.JSON(http.StatusOK, gin.H{"message": "hub entry updated", "id": oid.Hex()})
 	}
 }
 
 // DeleteHub - Remove hub entry
 func DeleteHub(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// ✅ Get and validate user ID
 		uid := c.GetString("user_id")
+		if uid == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
 		userID, err := primitive.ObjectIDFromHex(uid)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user ID"})
 			return
 		}
 
-		oid, err := primitive.ObjectIDFromHex(c.Param("id"))
+		// ✅ Get and validate Hub ID
+		hubID := c.Param("id")
+		oid, err := primitive.ObjectIDFromHex(hubID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid hub ID"})
 			return
@@ -198,12 +244,18 @@ func DeleteHub(cfg *config.Config) gin.HandlerFunc {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
+		// ✅ Ensure user ownership before deletion
 		res, err := col.DeleteOne(ctx, bson.M{"_id": oid, "user_id": userID})
-		if err != nil || res.DeletedCount == 0 {
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete hub entry"})
+			return
+		}
+		if res.DeletedCount == 0 {
 			c.JSON(http.StatusNotFound, gin.H{"error": "hub entry not found or not owned"})
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"message": "hub entry deleted"})
+		c.JSON(http.StatusOK, gin.H{"message": "hub entry deleted", "id": oid.Hex()})
 	}
 }
+

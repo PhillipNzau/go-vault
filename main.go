@@ -14,27 +14,26 @@ import (
 )
 
 func main() {
-	// Load env
-	if err := godotenv.Load(); err != nil {
-		log.Println("no .env file loaded, reading environment variables")
-	}
+	 // Load env
+    if err := godotenv.Load(); err != nil {
+        log.Println("no .env file loaded, reading environment variables")
+    }
 
-	// Load app config (JWT secret, etc.)
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		log.Fatalf("config load error: %v", err)
-	}
+    // Load app config (JWT secret, etc.)
+    cfg, err := config.LoadConfig()
+    if err != nil {
+        log.Fatalf("config load error: %v", err)
+    }
 
-	// Ensure indexes for all collections
-	config.EnsureAllIndexes(cfg.MongoClient, cfg.DBName)
+    // ✅ Connect to MongoDB first
+    client := config.ConnectDB()
+    if client == nil {
+        log.Fatal("❌ Could not connect to MongoDB")
+    }
+    log.Println("✅ Connected to MongoDB")
 
-
-	// ✅ Ensure MongoDB connection is initialized
-	client := config.ConnectDB()
-	if client == nil {
-		log.Fatal("❌ Could not connect to MongoDB")
-	}
-	log.Println("✅ Connected to MongoDB")
+    // ✅ Now ensure indexes
+    config.EnsureAllIndexes(client, cfg.DBName)
 
 	// Gin router
 	r := gin.Default()
