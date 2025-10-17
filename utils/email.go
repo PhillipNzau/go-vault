@@ -7,14 +7,15 @@ import (
 	"gopkg.in/gomail.v2"
 )
 
-// SendEmail sends an email using Gmail SMTP with credentials from env variables
 func SendEmail(to, subject, body string) error {
-	// Get credentials from environment variables
-	from := os.Getenv("EMAIL_FROM")       // e.g. your Gmail address
-	password := os.Getenv("EMAIL_PASS")   // Gmail App Password (not your Gmail login password)
+	from := os.Getenv("EMAIL_FROM")       
+	smtpUser := os.Getenv("SMTP_USER")    
+	smtpPass := os.Getenv("SMTP_PASS")    
+	smtpHost := os.Getenv("SMTP_HOST")    
+	smtpPort := 587                        
 
-	if from == "" || password == "" {
-		log.Println("missing EMAIL_FROM or EMAIL_PASS environment variables")
+	if from == "" || smtpUser == "" || smtpPass == "" || smtpHost == "" {
+		log.Println("Missing one or more required SMTP environment variables")
 		return nil
 	}
 
@@ -22,17 +23,15 @@ func SendEmail(to, subject, body string) error {
 	m.SetHeader("From", from)
 	m.SetHeader("To", to)
 	m.SetHeader("Subject", subject)
-	m.SetBody("text/html", body)
+	m.SetBody("text/plain", body)
 
-	// Gmail SMTP server
-	d := gomail.NewDialer("smtp.gmail.com", 587, from, password)
+	d := gomail.NewDialer(smtpHost, smtpPort, smtpUser, smtpPass)
 
-	// Send the email
 	if err := d.DialAndSend(m); err != nil {
-		log.Printf("failed to send email to %s: %v", to, err)
+		log.Printf("Failed to send email to %s: %v", to, err)
 		return err
 	}
 
-	log.Printf("email successfully sent to %s", to)
+	log.Printf("Email successfully sent to %s", to)
 	return nil
 }
