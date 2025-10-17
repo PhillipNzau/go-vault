@@ -78,9 +78,12 @@ func EnsureCredentialIndexes(client *mongo.Client, dbName string) {
 	}
 
 	uniqueUserSiteIdx := mongo.IndexModel{
-		Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "site", Value: 1}},
-		Options: options.Index().SetUnique(true).SetBackground(true),
-	}
+    Keys: bson.D{
+        {Key: "user_id", Value: 1},
+        {Key: "site_name", Value: 1},
+    },
+    Options: options.Index().SetUnique(true).SetBackground(true),
+}
 
 	_, err := col.Indexes().CreateMany(ctx, []mongo.IndexModel{userIdx, siteIdx, uniqueUserSiteIdx})
 	if err != nil {

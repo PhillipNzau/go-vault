@@ -20,14 +20,20 @@ import (
 // CreateCredential - Add new password/credential
 func CreateCredential(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// ✅ Validate user ID
 		uid := c.GetString("user_id")
+		if uid == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+
 		userID, err := primitive.ObjectIDFromHex(uid)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user id"})
 			return
 		}
 
-
+		// ✅ Parse and validate input
 		var input struct {
 			SiteName string `json:"site_name" binding:"required"`
 			Username string `json:"username" binding:"required"`
@@ -42,18 +48,20 @@ func CreateCredential(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
+		// ✅ Encrypt password (already returns base64 string)
 		enc, err := utils.Encrypt(cfg.AESKey, input.Password)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "encryption failed"})
 			return
 		}
 
+		// ✅ Build credential object
 		cred := models.Credential{
 			ID:                primitive.NewObjectID(),
 			UserID:            userID,
 			SiteName:          input.SiteName,
 			Username:          input.Username,
-			PasswordEncrypted: enc,
+			PasswordEncrypted: enc, // already safe string
 			LoginURL:          input.LoginURL,
 			Notes:             input.Notes,
 			Category:          input.Category,
@@ -61,18 +69,28 @@ func CreateCredential(cfg *config.Config) gin.HandlerFunc {
 			UpdatedAt:         time.Now(),
 		}
 
+		// ✅ Insert into MongoDB
 		col := cfg.MongoClient.Database(cfg.DBName).Collection("credentials")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		if _, err := col.InsertOne(ctx, cred); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save credential"})
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "could not save credential",
+				"details": err.Error(),
+			})
 			return
 		}
 
-		c.JSON(http.StatusCreated, gin.H{"id": cred.ID.Hex(), "message": "credential created"})
+		// ✅ Success response
+		c.JSON(http.StatusCreated, gin.H{
+			"id":      cred.ID.Hex(),
+			"message": "credential created",
+		})
 	}
 }
+
+
 
 // ListCredentials - Show all credentials for logged-in user
 func ListCredentials(cfg *config.Config) gin.HandlerFunc {
